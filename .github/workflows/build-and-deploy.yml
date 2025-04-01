@@ -1,0 +1,133 @@
+name: 构建并部署前端
+
+on:
+  # 触发条件
+  schedule:
+    - cron: "0 0 * * *" # 每天午夜12点触发
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # 获取完整历史以便生成正确的版本信息
+          token: ${{ secrets.PAT_TOKEN }} # 使用PAT令牌进行检出，这样后续推送时会有权限
+
+      - name: 设置Node.js环境
+        uses: actions/setup-node@v3
+        with:
+          node-version: "22"
+
+      - name: 安装pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+          run_install: false
+
+      - name: 获取pnpm缓存目录
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: 设置pnpm缓存
+        uses: actions/cache@v3
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: 安装依赖
+        run: |
+          pnpm install
+
+      - name: 从MongoDB获取数据
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          MONGODB_DB_NAME: ${{ secrets.MONGODB_DB_NAME }}
+          MONGODB_COLLECTION: ${{ secrets.MONGODB_COLLECTION }}
+        run: |
+          echo "尝试从MongoDB获取数据..."
+          node scripts/fetchFromMongoDB.js || echo "数据获取失败，将使用备用数据"
+          # 确保apiData.json存在，即使是空数组
+          if [ ! -f "./src/apiData.json" ]; then
+            echo "创建空的apiData.json文件..."
+            echo "[]" > ./src/apiData.json
+          fi
+
+      - name: 构建前端应用
+        run: |
+          pnpm run build
+
+      - name: 创建静态文件专用分支
+        run: |
+          # 配置Git
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "GitHub Actions"
+
+          # 重新设置远程URL，包含访问令牌
+          git remote set-url origin https://${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git
+
+          # 创建一个全新的build-artifacts分支（如果不存在则创建，如果存在则先删除再创建）
+          git checkout --orphan build-artifacts || git checkout -B build-artifacts
+
+          # 清理工作目录，只保留构建产物
+          find . -maxdepth 1 ! -name 'build' ! -name '.git' -exec rm -rf {} \;
+
+          # 将build目录内容移动到根目录
+          cp -r build/* .
+          rm -rf build
+
+          # 添加所有文件到Git
+          git add -A
+
+          # 提交更改
+          git commit -m "更新前端构建产物 - $(date +'%Y-%m-%d %H:%M:%S')" || echo "没有更改需要提交"
+
+          # 强制推送到build-artifacts分支
+          git push -f origin build-artifacts
+
+      - name: 触发后端仓库工作流
+        run: |
+          echo "开始触发后端仓库工作流..."
+
+          # 设置后端仓库名称（更正为正确的仓库名）
+          BACKEND_REPO="USYDShawnTan/api-backend"
+          echo "后端仓库: $BACKEND_REPO"
+
+          # 创建临时文件保存响应
+          RESPONSE_FILE="response.txt"
+
+          # 发送带有详细输出的请求
+          HTTP_STATUS=$(curl -s -o $RESPONSE_FILE -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/repos/$BACKEND_REPO/dispatches \
+            -d '{"event_type": "frontend_updated", "client_payload": {"ref": "build-artifacts"}}')
+
+          echo "HTTP状态码: $HTTP_STATUS"
+          echo "响应内容:"
+          cat $RESPONSE_FILE || echo "无响应内容"
+
+          # 如果状态码不是2xx，视为失败
+          if [[ $HTTP_STATUS -lt 200 || $HTTP_STATUS -gt 299 ]]; then
+            echo "触发后端工作流失败！"
+            echo "请检查:"
+            echo "1. PAT_TOKEN权限是否包含'repo'和'workflow'"
+            echo "2. 后端仓库名称是否正确"
+            echo "3. 后端仓库是否已配置repository_dispatch事件"
+            exit 1
+          else
+            echo "成功触发后端工作流"
+          fi

@@ -1,0 +1,41 @@
+@import 'tailwindcss/base';
+@import 'tailwindcss/components';
+@import 'tailwindcss/utilities';
+
+/* 全局设置字体，使用霞鹜文楷CDN字体 */
+body {
+    font-family: "LXGW WenKai", 'Arial', sans-serif;
+}
+
+/* 明确使用霞鹜文楷字体的元素 */
+.font-wenkai {
+    font-family: "LXGW WenKai", 'Arial', sans-serif;
+}
+
+/* 隐藏所有滚动条 */
+::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+}
+
+/* Firefox隐藏滚动条 */
+* {
+    scrollbar-width: none;
+}
+
+/* IE和Edge隐藏滚动条 */
+* {
+    -ms-overflow-style: none;
+}
+
+/* 平滑滚动行为 */
+html {
+    scroll-behavior: smooth;
+}
+
+/* 文本阴影效果 */
+.text-shadow {
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+}
+
